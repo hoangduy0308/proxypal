@@ -1887,12 +1887,31 @@ export CODE_ASSIST_ENDPOINT="{}"
             // See: https://help.router-for.me/agent-client/amp-cli.html
             let amp_endpoint = format!("http://localhost:{}", port);
             
-            // Write settings.json - amp.url is the only required setting
-            let settings_content = format!(r#"{{
-  "amp.url": "{}"
-}}"#, amp_endpoint);
+            // Build full settings.json with all Amp CLI options
+            // See: https://ampcode.com/manual#configuration
+            let settings_json = serde_json::json!({
+                // Core proxy URL - routes all Amp traffic through CLIProxyAPI
+                "amp.url": amp_endpoint,
+                
+                // Enable extended thinking for Claude models
+                "amp.anthropic.thinking.enabled": true,
+                
+                // Enable TODOs tracking
+                "amp.todos.enabled": true,
+                
+                // Git commit settings - add Amp thread link and co-author
+                "amp.git.commit.ampThread.enabled": true,
+                "amp.git.commit.coauthor.enabled": true,
+                
+                // Tool timeout (5 minutes)
+                "amp.tools.stopTimeout": 300,
+                
+                // Auto-update mode
+                "amp.updates.mode": "auto"
+            });
             
             let config_path = amp_dir.join("settings.json");
+            let settings_content = serde_json::to_string_pretty(&settings_json).map_err(|e| e.to_string())?;
             std::fs::write(&config_path, &settings_content).map_err(|e| e.to_string())?;
             
             // Also provide env var option and API key instructions
@@ -1908,7 +1927,7 @@ export AMP_URL="{}"
                 "configType": "both",
                 "configPath": config_path.to_string_lossy(),
                 "shellConfig": shell_config,
-                "instructions": "Amp CLI has been configured. Run 'amp login' to authenticate (opens browser), then 'amp' to start using it. For API key auth, get your key from https://ampcode.com/settings"
+                "instructions": "Amp CLI has been configured with full settings. Run 'amp login' to authenticate (opens browser), then 'amp' to start using it. For API key auth, get your key from https://ampcode.com/settings"
             }))
         },
         
