@@ -1513,11 +1513,48 @@ async fn detect_copilot_api(app: tauri::AppHandle) -> Result<CopilotApiDetection
     let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("~"));
     let home_str = home.to_string_lossy();
     
-    let node_paths: Vec<String> = if cfg!(target_os = "macos") {
+    // Helper: find nvm node binary by checking versions directory
+    let find_nvm_node = |home: &std::path::Path| -> Option<String> {
+        let nvm_versions = home.join(".nvm/versions/node");
+        if nvm_versions.exists() {
+            // Try to read the default alias first
+            let default_alias = home.join(".nvm/alias/default");
+            if let Ok(alias) = std::fs::read_to_string(&default_alias) {
+                let alias = alias.trim();
+                // Find matching version directory
+                if let Ok(entries) = std::fs::read_dir(&nvm_versions) {
+                    for entry in entries.flatten() {
+                        let name = entry.file_name();
+                        let name_str = name.to_string_lossy();
+                        if name_str.starts_with(&format!("v{}", alias)) || name_str == alias {
+                            let node_path = entry.path().join("bin/node");
+                            if node_path.exists() {
+                                return Some(node_path.to_string_lossy().to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            // Fallback: use the most recent version (sorted alphabetically, last is usually newest)
+            if let Ok(entries) = std::fs::read_dir(&nvm_versions) {
+                let mut versions: Vec<_> = entries
+                    .flatten()
+                    .filter(|e| e.path().join("bin/node").exists())
+                    .collect();
+                versions.sort_by(|a, b| b.file_name().cmp(&a.file_name())); // Descending
+                if let Some(entry) = versions.first() {
+                    let node_path = entry.path().join("bin/node");
+                    return Some(node_path.to_string_lossy().to_string());
+                }
+            }
+        }
+        None
+    };
+    
+    let mut node_paths: Vec<String> = if cfg!(target_os = "macos") {
         vec![
             // Version managers (most common for developers)
             format!("{}/.volta/bin/node", home_str),      // Volta
-            format!("{}/.nvm/current/bin/node", home_str), // nvm (symlinked)
             format!("{}/.fnm/current/bin/node", home_str), // fnm
             format!("{}/.asdf/shims/node", home_str),      // asdf
             // System package managers
@@ -1547,7 +1584,6 @@ async fn detect_copilot_api(app: tauri::AppHandle) -> Result<CopilotApiDetection
         vec![
             // Version managers
             format!("{}/.volta/bin/node", home_str),
-            format!("{}/.nvm/current/bin/node", home_str),
             format!("{}/.fnm/current/bin/node", home_str),
             format!("{}/.asdf/shims/node", home_str),
             // System paths
@@ -1555,6 +1591,13 @@ async fn detect_copilot_api(app: tauri::AppHandle) -> Result<CopilotApiDetection
             "/usr/local/bin/node".to_string(),
             "/home/linuxbrew/.linuxbrew/bin/node".to_string(),
         ]
+    };
+    
+    // Add nvm path if found (nvm doesn't use a simple symlink structure)
+    if cfg!(not(target_os = "windows")) {
+        if let Some(nvm_node) = find_nvm_node(&home) {
+            node_paths.insert(0, nvm_node); // Prioritize nvm
+        }
     };
     
     // Find working node binary
