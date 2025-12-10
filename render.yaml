@@ -1,0 +1,46 @@
+# Render.com Blueprint for ProxyPal Server
+#
+# IMPORTANT: This service MUST run as a single instance (minInstances: 1, maxInstances: 1)
+# because SQLite does not support concurrent writes from multiple processes.
+# If you need horizontal scaling, migrate to PostgreSQL.
+
+services:
+  - type: web
+    name: proxypal-server
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    plan: starter
+    
+    # CRITICAL: Single instance only - SQLite limitation
+    scaling:
+      minInstances: 1
+      maxInstances: 1
+    
+    envVars:
+      # Security credentials - set manually in Render dashboard
+      - key: ADMIN_PASSWORD
+        sync: false  # Must be set manually in Render dashboard
+      - key: ENCRYPTION_KEY
+        sync: false  # Must be set manually in Render dashboard
+      
+      # Database and storage paths (Render Disk)
+      - key: DATABASE_PATH
+        value: /data/proxypal.db
+      - key: DATA_DIR
+        value: /data
+      
+      # CLIProxyAPI configuration
+      - key: CLIPROXY_BINARY_PATH
+        value: /app/cliproxyapi
+      - key: PROXY_MANAGEMENT_URL
+        value: http://127.0.0.1:8317
+      - key: MANAGEMENT_KEY
+        value: proxypal-mgmt-key
+    
+    # Persistent storage for SQLite database
+    disk:
+      name: proxypal-data
+      mountPath: /data
+      sizeGB: 1

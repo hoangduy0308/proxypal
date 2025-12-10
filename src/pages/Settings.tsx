@@ -2,6 +2,7 @@ import { createSignal, For, Show, createEffect } from "solid-js";
 import { Button, Switch } from "../components/ui";
 import { appStore } from "../stores/app";
 import { toastStore } from "../stores/toast";
+import { isTauri, backendClient } from "../backend";
 import {
   saveConfig,
   AMP_MODEL_SLOTS,
@@ -118,45 +119,54 @@ export function SettingsPage() {
   createEffect(async () => {
     const proxyRunning = appStore.proxyStatus().running;
     if (proxyRunning) {
+      // Fetch available models - works in both modes
       try {
-        const models = await getAvailableModels();
-        setAvailableModels(models);
+        if (isTauri()) {
+          const models = await getAvailableModels();
+          setAvailableModels(models);
+        } else {
+          // HTTP mode: could fetch from server if available
+          setAvailableModels([]);
+        }
       } catch (error) {
         console.error("Failed to fetch available models:", error);
         setAvailableModels([]);
       }
 
-      // Fetch runtime settings from Management API
-      try {
-        const interval = await getMaxRetryInterval();
-        setMaxRetryIntervalState(interval);
-      } catch (error) {
-        console.error("Failed to fetch max retry interval:", error);
-      }
+      // Runtime settings - Tauri only (requires local proxy management API)
+      if (isTauri()) {
+        // Fetch runtime settings from Management API
+        try {
+          const interval = await getMaxRetryInterval();
+          setMaxRetryIntervalState(interval);
+        } catch (error) {
+          console.error("Failed to fetch max retry interval:", error);
+        }
 
-      try {
-        const wsAuth = await getWebsocketAuth();
-        setWebsocketAuthState(wsAuth);
-      } catch (error) {
-        console.error("Failed to fetch WebSocket auth:", error);
-      }
+        try {
+          const wsAuth = await getWebsocketAuth();
+          setWebsocketAuthState(wsAuth);
+        } catch (error) {
+          console.error("Failed to fetch WebSocket auth:", error);
+        }
 
-      try {
-        const prioritize = await getPrioritizeModelMappings();
-        setPrioritizeModelMappingsState(prioritize);
-      } catch (error) {
-        console.error("Failed to fetch prioritize model mappings:", error);
-      }
+        try {
+          const prioritize = await getPrioritizeModelMappings();
+          setPrioritizeModelMappingsState(prioritize);
+        } catch (error) {
+          console.error("Failed to fetch prioritize model mappings:", error);
+        }
 
-      // Fetch OAuth excluded models
-      try {
-        setLoadingExcludedModels(true);
-        const excluded = await getOAuthExcludedModels();
-        setOAuthExcludedModelsState(excluded);
-      } catch (error) {
-        console.error("Failed to fetch OAuth excluded models:", error);
-      } finally {
-        setLoadingExcludedModels(false);
+        // Fetch OAuth excluded models
+        try {
+          setLoadingExcludedModels(true);
+          const excluded = await getOAuthExcludedModels();
+          setOAuthExcludedModelsState(excluded);
+        } catch (error) {
+          console.error("Failed to fetch OAuth excluded models:", error);
+        } finally {
+          setLoadingExcludedModels(false);
+        }
       }
     } else {
       setAvailableModels([]);
@@ -580,7 +590,15 @@ export function SettingsPage() {
     // Auto-save config
     setSaving(true);
     try {
-      await saveConfig(newConfig);
+      if (isTauri()) {
+        await saveConfig(newConfig);
+      } else {
+        await backendClient.saveConfig({
+          proxyPort: newConfig.port,
+          autoStartProxy: newConfig.autoStart,
+          logLevel: newConfig.debug ? 'debug' : 'info',
+        });
+      }
       toastStore.success("Settings saved");
     } catch (error) {
       console.error("Failed to save config:", error);
@@ -733,23 +751,25 @@ export function SettingsPage() {
       {/* Main content */}
       <main class="flex-1 p-4 sm:p-6 overflow-y-auto">
         <div class="max-w-xl mx-auto space-y-4 sm:space-y-6 animate-stagger">
-          {/* General settings */}
+          {/* General settings - Launch at login is Tauri only */}
           <div class="space-y-4">
             <h2 class="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider">
               General
             </h2>
 
             <div class="space-y-4 p-4 rounded-xl bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700">
-              <Switch
-                label="Launch at login"
-                description="Start ProxyPal automatically when you log in"
-                checked={config().launchAtLogin}
-                onChange={(checked) =>
-                  handleConfigChange("launchAtLogin", checked)
-                }
-              />
+              <Show when={isTauri()}>
+                <Switch
+                  label="Launch at login"
+                  description="Start ProxyPal automatically when you log in"
+                  checked={config().launchAtLogin}
+                  onChange={(checked) =>
+                    handleConfigChange("launchAtLogin", checked)
+                  }
+                />
 
-              <div class="border-t border-gray-200 dark:border-gray-700" />
+                <div class="border-t border-gray-200 dark:border-gray-700" />
+              </Show>
 
               <Switch
                 label="Auto-start proxy"
@@ -757,6 +777,16 @@ export function SettingsPage() {
                 checked={config().autoStart}
                 onChange={(checked) => handleConfigChange("autoStart", checked)}
               />
+              
+              <Show when={!isTauri()}>
+                <div class="border-t border-gray-200 dark:border-gray-700" />
+                <div class="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <span>Some settings are only available in the desktop app</span>
+                </div>
+              </Show>
             </div>
           </div>
 
@@ -838,7 +868,7 @@ export function SettingsPage() {
                 </p>
               </label>
 
-              <Show when={appStore.proxyStatus().running}>
+              <Show when={appStore.proxyStatus().running && isTauri()}>
                 <div class="border-t border-gray-200 dark:border-gray-700" />
 
                 <label class="block">
@@ -936,8 +966,8 @@ export function SettingsPage() {
                   </p>
                 </div>
 
-                {/* Prioritize Model Mappings Toggle */}
-                <Show when={appStore.proxyStatus().running}>
+                {/* Prioritize Model Mappings Toggle - Tauri only */}
+                <Show when={appStore.proxyStatus().running && isTauri()}>
                   <div class="flex items-center justify-between p-3 bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700">
                     <div class="flex-1">
                       <div class="flex items-center gap-2">
@@ -2289,55 +2319,56 @@ export function SettingsPage() {
             </div>
           </Show>
 
-          {/* Copilot Detection */}
-          <div class="space-y-4">
-            <button
-              type="button"
-              onClick={() =>
-                setCopilotDetectionExpanded(!copilotDetectionExpanded())
-              }
-              class="flex items-center justify-between w-full text-left"
-            >
-              <h2 class="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider">
-                Copilot API Detection
-              </h2>
-              <svg
-                class={`w-5 h-5 text-gray-400 transition-transform ${copilotDetectionExpanded() ? "rotate-180" : ""}`}
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
+          {/* Copilot Detection - Tauri only */}
+          <Show when={isTauri()}>
+            <div class="space-y-4">
+              <button
+                type="button"
+                onClick={() =>
+                  setCopilotDetectionExpanded(!copilotDetectionExpanded())
+                }
+                class="flex items-center justify-between w-full text-left"
               >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M19 9l-7 7-7-7"
-                />
-              </svg>
-            </button>
-
-            <Show when={copilotDetectionExpanded()}>
-              <div class="space-y-4 p-4 rounded-xl bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700">
-                <p class="text-xs text-gray-500 dark:text-gray-400">
-                  Check if Node.js and copilot-api are detected on your system.
-                  This helps diagnose Copilot startup issues.
-                </p>
-
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={runCopilotDetection}
-                  disabled={detectingCopilot()}
+                <h2 class="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider">
+                  Copilot API Detection
+                </h2>
+                <svg
+                  class={`w-5 h-5 text-gray-400 transition-transform ${copilotDetectionExpanded() ? "rotate-180" : ""}`}
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
                 >
-                  {detectingCopilot() ? "Detecting..." : "Run Detection"}
-                </Button>
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M19 9l-7 7-7-7"
+                  />
+                </svg>
+              </button>
 
-                <Show when={copilotDetection()}>
-                  {(detection) => (
-                    <div class="space-y-3 text-xs">
-                      <div class="flex items-center gap-2">
-                        <span
-                          class={`w-2 h-2 rounded-full ${detection().nodeAvailable ? "bg-green-500" : "bg-red-500"}`}
+              <Show when={copilotDetectionExpanded()}>
+                <div class="space-y-4 p-4 rounded-xl bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700">
+                  <p class="text-xs text-gray-500 dark:text-gray-400">
+                    Check if Node.js and copilot-api are detected on your system.
+                    This helps diagnose Copilot startup issues.
+                  </p>
+
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={runCopilotDetection}
+                    disabled={detectingCopilot()}
+                  >
+                    {detectingCopilot() ? "Detecting..." : "Run Detection"}
+                  </Button>
+
+                  <Show when={copilotDetection()}>
+                    {(detection) => (
+                      <div class="space-y-3 text-xs">
+                        <div class="flex items-center gap-2">
+                          <span
+                            class={`w-2 h-2 rounded-full ${detection().nodeAvailable ? "bg-green-500" : "bg-red-500"}`}
                         />
                         <span class="font-medium">Node.js:</span>
                         <span
@@ -2442,6 +2473,7 @@ export function SettingsPage() {
               </div>
             </Show>
           </div>
+          </Show>
 
           {/* Accounts */}
           <div class="space-y-4">
@@ -2523,45 +2555,47 @@ export function SettingsPage() {
             </div>
           </div>
 
-          {/* Auth Files */}
-          <div class="space-y-4">
-            <h2 class="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider">
-              Auth Files
-            </h2>
+          {/* Auth Files - Tauri only */}
+          <Show when={isTauri()}>
+            <div class="space-y-4">
+              <h2 class="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider">
+                Auth Files
+              </h2>
 
-            <div class="p-4 rounded-xl bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700">
-              <div class="flex items-center justify-between">
-                <div>
-                  <p class="text-sm font-medium text-gray-700 dark:text-gray-300">
-                    Manage Auth Files
-                  </p>
-                  <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                    Upload, enable, or remove OAuth credential files
-                  </p>
-                </div>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => setCurrentPage("auth-files")}
-                >
-                  <svg
-                    class="w-4 h-4 mr-1.5"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
+              <div class="p-4 rounded-xl bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <p class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      Manage Auth Files
+                    </p>
+                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                      Upload, enable, or remove OAuth credential files
+                    </p>
+                  </div>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => setCurrentPage("auth-files")}
                   >
-                    <path
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      stroke-width="2"
-                      d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                    />
-                  </svg>
-                  Manage
-                </Button>
+                    <svg
+                      class="w-4 h-4 mr-1.5"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="2"
+                        d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                      />
+                    </svg>
+                    Manage
+                  </Button>
+                </div>
               </div>
             </div>
-          </div>
+          </Show>
 
           {/* Logs */}
           <div class="space-y-4">
@@ -2643,8 +2677,8 @@ export function SettingsPage() {
             </div>
           </div>
 
-          {/* Raw YAML Config Editor (Power Users) */}
-          <Show when={appStore.proxyStatus().running}>
+          {/* Raw YAML Config Editor (Power Users) - Tauri only */}
+          <Show when={appStore.proxyStatus().running && isTauri()}>
             <div class="space-y-4">
               <h2 class="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider">
                 Raw Configuration

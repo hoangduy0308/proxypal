@@ -1,0 +1,15 @@
+[workspace]
+members = [
+  "src-tauri",
+  "proxypal-server",
+]
+resolver = "2"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "fs", "signal", "process", "io-util", "sync"] }
+uuid = { version = "1", features = ["v4"] }
+chrono = "0.4"
+regex = "1"
+reqwest = { version = "0.12", features = ["json"] }

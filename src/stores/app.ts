@@ -1,4 +1,6 @@
 import { createSignal, createRoot, onCleanup } from "solid-js";
+import { backendClient, isTauri } from "../backend";
+import type { ProxyStatus as BackendProxyStatus } from "../backend";
 import type {
   ProxyStatus,
   AuthStatus,
@@ -6,12 +8,8 @@ import type {
   OAuthCallback,
 } from "../lib/tauri";
 import {
-  getProxyStatus,
   getAuthStatus,
   refreshAuthStatus,
-  getConfig,
-  startProxy,
-  stopProxy,
   completeOAuth,
   onProxyStatusChanged,
   onAuthStatusChanged,
@@ -76,12 +74,21 @@ function createAppStore() {
     | "auth-files"
     | "logs"
     | "analytics"
+    | "users"
+    | "usage"
   >("welcome");
   const [isLoading, setIsLoading] = createSignal(false);
   const [isInitialized, setIsInitialized] = createSignal(false);
 
   // Proxy uptime tracking
   const [proxyStartTime, setProxyStartTime] = createSignal<number | null>(null);
+
+  // Convert backend ProxyStatus to Tauri ProxyStatus format
+  const mapBackendProxyStatus = (status: BackendProxyStatus): ProxyStatus => ({
+    running: status.running,
+    port: status.port,
+    endpoint: status.endpoint ?? `http://localhost:${status.port}/v1`,
+  });
 
   // Helper to update proxy status and track uptime
   const updateProxyStatus = (status: ProxyStatus, showNotification = false) => {
@@ -91,122 +98,148 @@ function createAppStore() {
     // Track start time when proxy starts
     if (status.running && !wasRunning) {
       setProxyStartTime(Date.now());
-      if (showNotification) {
+      if (showNotification && isTauri()) {
         showSystemNotification("ProxyPal", "Proxy server is now running");
       }
     } else if (!status.running && wasRunning) {
       setProxyStartTime(null);
-      if (showNotification) {
+      if (showNotification && isTauri()) {
         showSystemNotification("ProxyPal", "Proxy server has stopped");
       }
     }
   };
+
+  // Polling interval for HTTP mode
+  let pollingInterval: ReturnType<typeof setInterval> | null = null;
 
   // Initialize from backend
   const initialize = async () => {
     try {
       setIsLoading(true);
 
-      // Load initial state from backend
+      // Load initial state from backend via adapter (works for both modes)
       const [proxyState, configState] = await Promise.all([
-        getProxyStatus(),
-        getConfig(),
+        backendClient.getProxyStatus(),
+        backendClient.getConfig(),
       ]);
 
-      updateProxyStatus(proxyState);
-      setConfig(configState);
+      updateProxyStatus(mapBackendProxyStatus(proxyState));
+      // Map backend config to Tauri config format
+      setConfig((prev) => ({
+        ...prev,
+        port: configState.proxyPort,
+        autoStart: configState.autoStartProxy ?? prev.autoStart,
+      }));
 
-      // Refresh auth status from CLIProxyAPI's auth directory
-      try {
-        const authState = await refreshAuthStatus();
-        setAuthStatus(authState);
+      // Auth handling differs between modes
+      if (isTauri()) {
+        // Tauri mode: use Tauri-specific auth functions
+        try {
+          const authState = await refreshAuthStatus();
+          setAuthStatus(authState);
 
-        // Determine initial page based on auth status
-        const hasAnyAuth =
-          authState.claude ||
-          authState.openai ||
-          authState.gemini ||
-          authState.qwen ||
-          authState.iflow ||
-          authState.vertex ||
-          authState.antigravity;
-        if (hasAnyAuth) {
-          setCurrentPage("dashboard");
+          const hasAnyAuth =
+            authState.claude ||
+            authState.openai ||
+            authState.gemini ||
+            authState.qwen ||
+            authState.iflow ||
+            authState.vertex ||
+            authState.antigravity;
+          if (hasAnyAuth) {
+            setCurrentPage("dashboard");
+          }
+        } catch {
+          const authState = await getAuthStatus();
+          setAuthStatus(authState);
+
+          const hasAnyAuth =
+            authState.claude ||
+            authState.openai ||
+            authState.gemini ||
+            authState.qwen ||
+            authState.iflow ||
+            authState.vertex ||
+            authState.antigravity;
+          if (hasAnyAuth) {
+            setCurrentPage("dashboard");
+          }
         }
-      } catch {
-        // Fall back to saved auth status
-        const authState = await getAuthStatus();
-        setAuthStatus(authState);
 
-        const hasAnyAuth =
-          authState.claude ||
-          authState.openai ||
-          authState.gemini ||
-          authState.qwen ||
-          authState.iflow ||
-          authState.vertex ||
-          authState.antigravity;
-        if (hasAnyAuth) {
-          setCurrentPage("dashboard");
-        }
+        // Setup event listeners only in Tauri mode
+        const unlistenProxy = await onProxyStatusChanged((status) => {
+          updateProxyStatus(status);
+        });
+
+        const unlistenAuth = await onAuthStatusChanged((status) => {
+          setAuthStatus(status);
+        });
+
+        const unlistenOAuth = await onOAuthCallback(
+          async (data: OAuthCallback) => {
+            try {
+              const newAuthStatus = await completeOAuth(data.provider, data.code);
+              setAuthStatus(newAuthStatus);
+              setCurrentPage("dashboard");
+            } catch (error) {
+              console.error("Failed to complete OAuth:", error);
+            }
+          },
+        );
+
+        const unlistenTray = await onTrayToggleProxy(async (shouldStart) => {
+          try {
+            if (shouldStart) {
+              const status = await backendClient.startProxy();
+              updateProxyStatus(mapBackendProxyStatus(status), true);
+            } else {
+              const status = await backendClient.stopProxy();
+              updateProxyStatus(mapBackendProxyStatus(status), true);
+            }
+          } catch (error) {
+            console.error("Failed to toggle proxy:", error);
+          }
+        });
+
+        // Cleanup on unmount
+        onCleanup(() => {
+          unlistenProxy();
+          unlistenAuth();
+          unlistenOAuth();
+          unlistenTray();
+        });
+      } else {
+        // HTTP mode: no Tauri event listeners, use polling for status updates
+        setCurrentPage("dashboard");
+
+        pollingInterval = setInterval(async () => {
+          try {
+            const status = await backendClient.getProxyStatus();
+            updateProxyStatus(mapBackendProxyStatus(status));
+          } catch (error) {
+            console.error("Failed to poll proxy status:", error);
+          }
+        }, 30000);
+
+        onCleanup(() => {
+          if (pollingInterval) {
+            clearInterval(pollingInterval);
+            pollingInterval = null;
+          }
+        });
       }
 
-      // Setup event listeners
-      const unlistenProxy = await onProxyStatusChanged((status) => {
-        updateProxyStatus(status);
-      });
-
-      const unlistenAuth = await onAuthStatusChanged((status) => {
-        setAuthStatus(status);
-      });
-
-      const unlistenOAuth = await onOAuthCallback(
-        async (data: OAuthCallback) => {
-          // Complete the OAuth flow
-          try {
-            const newAuthStatus = await completeOAuth(data.provider, data.code);
-            setAuthStatus(newAuthStatus);
-            // Navigate to dashboard after successful auth
-            setCurrentPage("dashboard");
-          } catch (error) {
-            console.error("Failed to complete OAuth:", error);
-          }
-        },
-      );
-
-      const unlistenTray = await onTrayToggleProxy(async (shouldStart) => {
+      // Auto-start proxy if configured (Tauri mode only)
+      if (isTauri() && configState.autoStartProxy) {
         try {
-          if (shouldStart) {
-            const status = await startProxy();
-            updateProxyStatus(status, true); // Show notification
-          } else {
-            const status = await stopProxy();
-            updateProxyStatus(status, true); // Show notification
-          }
-        } catch (error) {
-          console.error("Failed to toggle proxy:", error);
-        }
-      });
-
-      // Auto-start proxy if configured
-      if (configState.autoStart) {
-        try {
-          const status = await startProxy();
-          updateProxyStatus(status);
+          const status = await backendClient.startProxy();
+          updateProxyStatus(mapBackendProxyStatus(status));
         } catch (error) {
           console.error("Failed to auto-start proxy:", error);
         }
       }
 
       setIsInitialized(true);
-
-      // Cleanup on unmount
-      onCleanup(() => {
-        unlistenProxy();
-        unlistenAuth();
-        unlistenOAuth();
-        unlistenTray();
-      });
     } catch (error) {
       console.error("Failed to initialize app:", error);
     } finally {

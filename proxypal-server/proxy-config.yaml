@@ -1,0 +1,7 @@
+port: 8317
+log-level: info
+auth-dir: ./auth
+api-keys:
+  - proxypal-default-key
+rate-limits:
+  requests-per-minute: 60

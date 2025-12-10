@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+target/
+
+# Build outputs (we build fresh in Docker)
+dist/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Local data
+*.db
+proxypal.db
+tmp-data/
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Test files
+*.test.*
+*.spec.*
+vitest.config.ts
+
+# CI/CD
+.github/
+
+# Misc
+.ignore
+-p/

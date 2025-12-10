@@ -30,6 +30,18 @@ Use your AI subscriptions (Claude, ChatGPT, Gemini, GitHub Copilot) with any cod
 | Windows  | x64                   | ✅     |
 | Linux    | x64 (.deb)            | ✅     |
 
+## Cloud Deployment
+
+ProxyPal can run as a standalone server for team/shared access, deployed to Render.com.
+
+**Server Mode Features:**
+- Multi-user support with API keys
+- Usage tracking per user
+- Web-based admin dashboard
+- Persistent storage with SQLite
+
+See [docs/DEPLOYMENT_RENDER.md](docs/DEPLOYMENT_RENDER.md) for the full deployment guide.
+
 ## Development
 
 ```bash

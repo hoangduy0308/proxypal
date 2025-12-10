@@ -10,6 +10,7 @@ import { OpenCodeKitBanner } from "../components/OpenCodeKitBanner";
 import { CopilotCard } from "../components/CopilotCard";
 import { appStore } from "../stores/app";
 import { toastStore } from "../stores/toast";
+import { isTauri, backendClient } from "../backend";
 import {
   importVertexCredential,
   startProxy,
@@ -374,6 +375,7 @@ export function DashboardPage() {
 
   // Load data on mount
   const loadAgents = async () => {
+    if (!isTauri()) return; // CLI agents only available in Tauri mode
     try {
       const detected = await detectCliAgents();
       setAgents(detected);
@@ -384,70 +386,127 @@ export function DashboardPage() {
   };
 
   onMount(async () => {
-    // Load agents - handle independently to avoid one failure blocking others
-    try {
-      const agentList = await detectCliAgents();
-      console.log("Detected CLI agents:", agentList);
-      setAgents(agentList);
-      setHasConfiguredAgent(agentList.some((a) => a.configured));
-    } catch (err) {
-      console.error("Failed to detect CLI agents:", err);
+    // Load agents - only in Tauri mode (CLI agents require local system access)
+    if (isTauri()) {
+      try {
+        const agentList = await detectCliAgents();
+        console.log("Detected CLI agents:", agentList);
+        setAgents(agentList);
+        setHasConfiguredAgent(agentList.some((a) => a.configured));
+      } catch (err) {
+        console.error("Failed to detect CLI agents:", err);
+      }
     }
 
-    // Load history
-    try {
-      const hist = await getRequestHistory();
-      setHistory(hist);
+    // Load history - Tauri mode uses local history, HTTP mode uses backend API
+    if (isTauri()) {
+      try {
+        const hist = await getRequestHistory();
+        setHistory(hist);
 
-      // Sync real token data from proxy if running
-      if (appStore.proxyStatus().running) {
-        try {
-          const synced = await syncUsageFromProxy();
-          setHistory(synced);
-        } catch (syncErr) {
-          console.warn("Failed to sync usage from proxy:", syncErr);
-          // Continue with disk-only history
+        // Sync real token data from proxy if running
+        if (appStore.proxyStatus().running) {
+          try {
+            const synced = await syncUsageFromProxy();
+            setHistory(synced);
+          } catch (syncErr) {
+            console.warn("Failed to sync usage from proxy:", syncErr);
+            // Continue with disk-only history
+          }
         }
+      } catch (err) {
+        console.error("Failed to load request history:", err);
       }
-    } catch (err) {
-      console.error("Failed to load request history:", err);
+    } else {
+      // HTTP mode - fetch logs from backend
+      try {
+        const logsResponse = await backendClient.getRequestLogs?.({ limit: 50 });
+        if (logsResponse) {
+          const requests = logsResponse.logs.map((log) => ({
+            id: String(log.id),
+            timestamp: typeof log.timestamp === 'string' ? new Date(log.timestamp).getTime() : log.timestamp,
+            provider: log.provider,
+            model: log.model,
+            method: log.method || 'POST',
+            path: log.path || '',
+            status: typeof log.status === 'string' ? parseInt(log.status) || 200 : log.status,
+            durationMs: log.durationMs,
+            tokensIn: log.tokensIn,
+            tokensOut: log.tokensOut,
+          }));
+          setHistory({
+            requests,
+            totalTokensIn: requests.reduce((sum, r) => sum + (r.tokensIn || 0), 0),
+            totalTokensOut: requests.reduce((sum, r) => sum + (r.tokensOut || 0), 0),
+            totalCostUsd: 0,
+          });
+        }
+      } catch (err) {
+        console.error("Failed to load request logs:", err);
+      }
     }
 
     // Load usage stats
-    try {
-      const usage = await getUsageStats();
-      setStats(usage);
-    } catch (err) {
-      console.error("Failed to load usage stats:", err);
+    if (isTauri()) {
+      try {
+        const usage = await getUsageStats();
+        setStats(usage);
+      } catch (err) {
+        console.error("Failed to load usage stats:", err);
+      }
+    } else {
+      try {
+        const usage = await backendClient.getUsageStats();
+        // Map HTTP backend stats to Tauri stats format
+        setStats({
+          totalRequests: usage.totalRequests,
+          successCount: usage.totalRequests, // HTTP mode doesn't separate these
+          failureCount: 0,
+          totalTokens: usage.totalTokensInput + usage.totalTokensOutput,
+          inputTokens: usage.totalTokensInput,
+          outputTokens: usage.totalTokensOutput,
+          requestsToday: 0,
+          tokensToday: 0,
+          models: [],
+          requestsByDay: [],
+          tokensByDay: [],
+          requestsByHour: [],
+          tokensByHour: [],
+        });
+      } catch (err) {
+        console.error("Failed to load usage stats:", err);
+      }
     }
 
-    // Listen for new requests and refresh data
-    const unlisten = await onRequestLog(async () => {
-      // Debounce: wait 1 second after request to allow backend to process
-      setTimeout(async () => {
-        try {
-          const hist = await getRequestHistory();
-          setHistory(hist);
+    // Listen for new requests - only in Tauri mode
+    if (isTauri()) {
+      const unlisten = await onRequestLog(async () => {
+        // Debounce: wait 1 second after request to allow backend to process
+        setTimeout(async () => {
+          try {
+            const hist = await getRequestHistory();
+            setHistory(hist);
 
-          // Also sync from proxy if running
-          if (appStore.proxyStatus().running) {
-            const synced = await syncUsageFromProxy();
-            setHistory(synced);
+            // Also sync from proxy if running
+            if (appStore.proxyStatus().running) {
+              const synced = await syncUsageFromProxy();
+              setHistory(synced);
+            }
+
+            // Refresh stats
+            const usage = await getUsageStats();
+            setStats(usage);
+          } catch (err) {
+            console.error("Failed to refresh after new request:", err);
           }
+        }, 1000);
+      });
 
-          // Refresh stats
-          const usage = await getUsageStats();
-          setStats(usage);
-        } catch (err) {
-          console.error("Failed to refresh after new request:", err);
-        }
-      }, 1000);
-    });
-
-    // Cleanup listener on unmount
-    onCleanup(() => {
-      unlisten();
-    });
+      // Cleanup listener on unmount
+      onCleanup(() => {
+        unlisten();
+      });
+    }
   });
 
   // Setup complete when: proxy running + provider connected + agent configured
@@ -1213,12 +1272,14 @@ export function DashboardPage() {
             </Show>
           </div>
 
-          {/* === ZONE 3.5: GitHub Copilot === */}
-          <CopilotCard
-            config={config().copilot}
-            onConfigChange={handleCopilotConfigChange}
-            proxyRunning={proxyStatus().running}
-          />
+          {/* === ZONE 3.5: GitHub Copilot (Tauri only) === */}
+          <Show when={isTauri()}>
+            <CopilotCard
+              config={config().copilot}
+              onConfigChange={handleCopilotConfigChange}
+              proxyRunning={proxyStatus().running}
+            />
+          </Show>
 
           {/* === ZONE 4: API Endpoint === */}
           <ApiEndpoint
@@ -1232,39 +1293,40 @@ export function DashboardPage() {
             onViewAll={() => setCurrentPage("logs")}
           />
 
-          {/* === ZONE 6: CLI Agents (always full detail) === */}
-          <div class="space-y-3">
-            <div class="flex items-center justify-between">
-              <div>
-                <h2 class="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider">
-                  CLI Agents
-                </h2>
-                <p class="text-xs text-gray-500 dark:text-gray-500 mt-0.5">
-                  {configuredAgents().length} of {agents().length} configured
-                </p>
-              </div>
-              <button
-                onClick={loadAgents}
-                class="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
-                title="Refresh"
-              >
-                <svg
-                  class="w-4 h-4"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
+          {/* === ZONE 6: CLI Agents (Tauri only) === */}
+          <Show when={isTauri()}>
+            <div class="space-y-3">
+              <div class="flex items-center justify-between">
+                <div>
+                  <h2 class="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider">
+                    CLI Agents
+                  </h2>
+                  <p class="text-xs text-gray-500 dark:text-gray-500 mt-0.5">
+                    {configuredAgents().length} of {agents().length} configured
+                  </p>
+                </div>
+                <button
+                  onClick={loadAgents}
+                  class="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
+                  title="Refresh"
                 >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-                  />
-                </svg>
-              </button>
-            </div>
+                  <svg
+                    class="w-4 h-4"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                    />
+                  </svg>
+                </button>
+              </div>
 
-            <Show when={!proxyStatus().running}>
+              <Show when={!proxyStatus().running}>
               <div class="p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800">
                 <div class="flex items-center gap-2 text-amber-700 dark:text-amber-300">
                   <svg
@@ -1508,6 +1570,41 @@ export function DashboardPage() {
               </div>
             </Show>
           </div>
+          </Show>
+
+          {/* HTTP mode notice for CLI agents */}
+          <Show when={!isTauri()}>
+            <div class="p-4 rounded-xl bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700">
+              <div class="flex items-center gap-3">
+                <div class="w-10 h-10 rounded-lg bg-gray-100 dark:bg-gray-700 flex items-center justify-center">
+                  <svg
+                    class="w-5 h-5 text-gray-400"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
+                    />
+                  </svg>
+                </div>
+                <div>
+                  <h3 class="font-medium text-gray-700 dark:text-gray-300">
+                    CLI Agents
+                  </h3>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    Agent configuration is only available in the desktop app
+                  </p>
+                </div>
+                <span class="ml-auto px-2 py-1 text-xs font-medium text-gray-500 bg-gray-100 dark:bg-gray-700 rounded">
+                  Desktop only
+                </span>
+              </div>
+            </div>
+          </Show>
 
           {/* Config Modal */}
           <Show when={configResult()}>
