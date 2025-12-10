@@ -11,7 +11,7 @@ services:
     dockerfilePath: ./Dockerfile
     dockerContext: .
     healthCheckPath: /healthz
-    plan: starter
+    plan: free  # WARNING: No persistent disk - data lost on redeploy
     
     # NOTE: Render defaults to 1 instance. Do NOT enable auto-scaling
     # because SQLite does not support concurrent writes from multiple processes.
@@ -37,8 +37,9 @@ services:
       - key: MANAGEMENT_KEY
         value: proxypal-mgmt-key
     
-    # Persistent storage for SQLite database
-    disk:
-      name: proxypal-data
-      mountPath: /data
-      sizeGB: 1
+    # Persistent storage for SQLite database (requires paid plan)
+    # Uncomment if using starter plan or higher
+    # disk:
+    #   name: proxypal-data
+    #   mountPath: /data
+    #   sizeGB: 1
