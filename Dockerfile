@@ -23,7 +23,7 @@ COPY src ./src
 RUN pnpm build
 
 # Stage 2: Build backend
-FROM rust:1.82 AS backend
+FROM rust:1.87 AS backend
 
 WORKDIR /app
 
