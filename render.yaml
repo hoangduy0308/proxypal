@@ -13,10 +13,8 @@ services:
     healthCheckPath: /healthz
     plan: starter
     
-    # CRITICAL: Single instance only - SQLite limitation
-    scaling:
-      minInstances: 1
-      maxInstances: 1
+    # NOTE: Render defaults to 1 instance. Do NOT enable auto-scaling
+    # because SQLite does not support concurrent writes from multiple processes.
     
     envVars:
       # Security credentials - set manually in Render dashboard
