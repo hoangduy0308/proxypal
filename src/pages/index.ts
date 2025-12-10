@@ -1,4 +1,5 @@
 export { WelcomePage } from "./Welcome";
+export { LoginPage } from "./Login";
 export { DashboardPage } from "./Dashboard";
 export { SettingsPage } from "./Settings";
 export { ApiKeysPage } from "./ApiKeys";

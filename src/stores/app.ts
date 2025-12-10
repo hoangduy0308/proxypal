@@ -112,10 +112,34 @@ function createAppStore() {
   // Polling interval for HTTP mode
   let pollingInterval: ReturnType<typeof setInterval> | null = null;
 
+  // Auth state for HTTP mode
+  const [isAuthenticated, setIsAuthenticated] = createSignal(false);
+
   // Initialize from backend
   const initialize = async () => {
     try {
       setIsLoading(true);
+
+      // In HTTP mode, check auth first before loading data
+      if (!isTauri()) {
+        try {
+          const authResult = await backendClient.getAuthStatus();
+          if (!authResult.authenticated) {
+            // Not logged in - show login page but mark as initialized
+            setCurrentPage("welcome");
+            setIsInitialized(true);
+            setIsLoading(false);
+            return;
+          }
+          setIsAuthenticated(true);
+        } catch {
+          // Auth check failed - show login page
+          setCurrentPage("welcome");
+          setIsInitialized(true);
+          setIsLoading(false);
+          return;
+        }
+      }
 
       // Load initial state from backend via adapter (works for both modes)
       const [proxyState, configState] = await Promise.all([
@@ -256,6 +280,8 @@ function createAppStore() {
     // Auth
     authStatus,
     setAuthStatus,
+    isAuthenticated,
+    setIsAuthenticated,
 
     // Config
     config,

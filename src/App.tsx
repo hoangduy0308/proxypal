@@ -1,6 +1,7 @@
 import { Match, Switch, onMount, Show } from "solid-js";
 import {
   WelcomePage,
+  LoginPage,
   DashboardPage,
   SettingsPage,
   ApiKeysPage,
@@ -11,13 +12,24 @@ import {
 import { ToastContainer } from "./components/ui";
 import { CommandPalette } from "./components/CommandPalette";
 import { appStore } from "./stores/app";
+import { isTauri } from "./backend";
 
 function App() {
-  const { currentPage, isInitialized, initialize } = appStore;
+  const { currentPage, isInitialized, initialize, isAuthenticated } = appStore;
 
   onMount(() => {
     initialize();
   });
+
+  // Determine which welcome/login page to show
+  const WelcomeOrLogin = () => {
+    // In HTTP mode without auth, show login page
+    if (!isTauri() && !isAuthenticated()) {
+      return <LoginPage />;
+    }
+    // In Tauri mode or authenticated HTTP mode, show welcome page
+    return <WelcomePage />;
+  };
 
   return (
     <>
@@ -36,9 +48,9 @@ function App() {
           </div>
         }
       >
-        <Switch fallback={<WelcomePage />}>
+        <Switch fallback={<WelcomeOrLogin />}>
           <Match when={currentPage() === "welcome"}>
-            <WelcomePage />
+            <WelcomeOrLogin />
           </Match>
           <Match when={currentPage() === "dashboard"}>
             <DashboardPage />
